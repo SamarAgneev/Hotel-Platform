@@ -1,0 +1,111 @@
+/**
+ * Design tokens for the Hotel Digital Platform.
+ *
+ * These are the ONLY place color, type, spacing, radius and shadow values
+ * are defined. Components must reference tokens (var(--...)) rather than
+ * raw values, so a tenant/theme can override this file per hotel without
+ * touching component code.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Color: base palette ---- */
+  /* Customer-facing "premium hospitality" palette: deep ink, warm brass
+     accent, soft linen surfaces. Admin reuses the same neutrals with a
+     cooler, higher-contrast operational accent. */
+  --color-ink-950: #14110d;
+  --color-ink-900: #1d1912;
+  --color-ink-700: #433b2e;
+  --color-ink-500: #6b6153;
+  --color-ink-300: #a89d8a;
+  --color-linen-50: #faf8f4;
+  --color-linen-100: #f3efe6;
+  --color-linen-200: #e8e1d2;
+  --color-brass-600: #a9752f;
+  --color-brass-500: #bf8a3f;
+  --color-brass-400: #d4a35f;
+  --color-ops-600: #2f5d62;
+  --color-ops-500: #3c7076;
+  --color-success-600: #2f7a4f;
+  --color-warning-600: #b8791f;
+  --color-danger-600: #b4402c;
+
+  /* Semantic surface / text tokens (what components should reference) */
+  --surface-page: var(--color-linen-50);
+  --surface-raised: #ffffff;
+  --surface-sunken: var(--color-linen-100);
+  --surface-inverse: var(--color-ink-950);
+  --border-subtle: var(--color-linen-200);
+  --border-default: #ddd3bf;
+  --text-primary: var(--color-ink-950);
+  --text-secondary: var(--color-ink-500);
+  --text-inverse: var(--color-linen-50);
+  --text-on-accent: #ffffff;
+  --accent-primary: var(--color-brass-600);
+  --accent-primary-hover: var(--color-brass-500);
+  --accent-ops: var(--color-ops-600);
+  --accent-ops-hover: var(--color-ops-500);
+  --state-success: var(--color-success-600);
+  --state-warning: var(--color-warning-600);
+  --state-danger: var(--color-danger-600);
+  --focus-ring: var(--color-ops-600);
+
+  /* ---- Type ---- */
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --text-4xl: 3rem;
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-normal: 1.6;
+
+  /* ---- Space scale (4px base) ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  /* ---- Radius ---- */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.875rem;
+  --radius-full: 999px;
+
+  /* ---- Shadow (used sparingly: overlays and raised admin panels only) ---- */
+  --shadow-sm: 0 1px 2px rgba(20, 17, 13, 0.06);
+  --shadow-md: 0 4px 16px rgba(20, 17, 13, 0.10);
+  --shadow-lg: 0 12px 32px rgba(20, 17, 13, 0.16);
+
+  /* ---- Layout ---- */
+  --container-max: 78rem;
+  --header-height: 4.5rem;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-page: var(--color-ink-950);
+  --surface-raised: var(--color-ink-900);
+  --surface-sunken: #201c15;
+  --surface-inverse: var(--color-linen-50);
+  --border-subtle: #2c271d;
+  --border-default: #3a3325;
+  --text-primary: var(--color-linen-50);
+  --text-secondary: var(--color-ink-300);
+  --text-inverse: var(--color-ink-950);
+}

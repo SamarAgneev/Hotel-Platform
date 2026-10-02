@@ -1,0 +1,501 @@
+// Hotel Digital Platform — foundation schema.
+//
+// Step 1 goal: correct relationships and responsibilities for every
+// domain entity, and a non-boolean availability model. Business logic
+// (booking engine, payment processing, automation handlers) is NOT
+// implemented here — this is structure only.
+//
+// Multi-hotel readiness: every operational entity hangs off `Property`,
+// and `Property` hangs off `Hotel` (an owner/brand may run several
+// properties). Nothing here assumes a single tenant.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+/// The billing/owning entity. A brand that may operate multiple properties.
+model Hotel {
+  id         String     @id @default(cuid())
+  name       String
+  slug       String     @unique
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  properties Property[]
+  staff      StaffUser[]
+
+  @@map("hotels")
+}
+
+/// A single physical property belonging to a Hotel. Almost everything
+/// operational (rooms, bookings, rates) scopes to a Property, not a Hotel,
+/// so a brand with several locations keeps clean data boundaries.
+model Property {
+  id          String   @id @default(cuid())
+  hotelId     String
+  hotel       Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  timezone    String   @default("UTC")
+  currency    String   @default("USD")
+  addressLine String
+  city        String
+  region      String?
+  country     String
+  postalCode  String?
+  latitude    Float?
+  longitude   Float?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  roomTypes   RoomType[]
+  rooms       Room[]
+  ratePlans   RatePlan[]
+  bookings    Booking[]
+  amenities   Amenity[]
+  promotions  Promotion[]
+  staff       StaffUser[]
+  notifications Notification[]
+  auditLogs   AuditLog[]
+
+  @@unique([hotelId, slug])
+  @@map("properties")
+}
+
+// ---------------------------------------------------------------------------
+// Inventory / rooms
+// ---------------------------------------------------------------------------
+
+/// A sellable category of room (e.g. "Deluxe King"). Rate plans and
+/// bookings reference a RoomType; the physical Room is assigned at
+/// check-in/allocation time, not at booking time — this is what allows
+/// "N rooms of this type" instead of a single boolean.
+model RoomType {
+  id          String   @id @default(cuid())
+  propertyId  String
+  property    Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  name        String
+  slug        String
+  description String?
+  /// Capacity rules. A party fits only if adults <= maxAdults AND
+  /// children <= maxChildren AND adults + children <= maxOccupancy.
+  maxAdults    Int     @default(2)
+  maxChildren  Int     @default(0)
+  maxOccupancy Int     @default(2)
+  basePriceCents Int
+  sizeSqm     Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rooms       Room[]
+  ratePlans   RatePlan[]
+  bookings    Booking[]
+  amenities   RoomTypeAmenity[]
+
+  @@unique([propertyId, slug])
+  @@map("room_types")
+}
+
+/// LONG-LIVED operational status of a physical room. This is deliberately
+/// NOT date-range availability: "occupied on 12 Oct" or "blocked 20-22 Oct"
+/// are derived from Booking/BookingRoom and RoomBlock rows for the dates
+/// being asked about, never stored as a flag on the room. Only rooms with
+/// status ACTIVE are ever sellable; the other values remove a room from all
+/// searches until staff change it back.
+enum RoomStatus {
+  ACTIVE
+  OUT_OF_SERVICE
+  MAINTENANCE
+  RETIRED
+}
+
+/// A single physical, sellable unit. Multiple Rooms share a RoomType.
+/// Availability is derived from RoomInventory (per-date, per-room), not
+/// from a status flag on the room alone.
+model Room {
+  id         String     @id @default(cuid())
+  propertyId String
+  property   Property   @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  roomTypeId String
+  roomType   RoomType   @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  roomNumber String
+  floor      String?
+  status     RoomStatus @default(ACTIVE)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  inventory  RoomInventory[]
+  bookingGuests BookingGuest[]
+  bookingRooms  BookingRoom[]
+  blocks        RoomBlock[]
+
+  @@index([propertyId, roomTypeId, status])
+  @@unique([propertyId, roomNumber])
+  @@map("rooms")
+}
+
+enum InventoryState {
+  OPEN
+  BOOKED
+  BLOCKED
+  MAINTENANCE
+}
+
+/// The heart of the availability system: one row per Room per calendar
+/// date. Availability for a date range is computed by checking that every
+/// date in the range is OPEN for a given room (or count of rooms per
+/// RoomType), never by a single "available" boolean on the room or type.
+/// A unique (roomId, date) constraint is what protects against
+/// overbooking/double-booking a physical room, and gives the DB itself a
+/// concurrency guard: the second of two concurrent booking attempts on the
+/// same room/date fails the unique constraint rather than silently
+/// double-booking.
+model RoomInventory {
+  id        String         @id @default(cuid())
+  roomId    String
+  room      Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  date      DateTime       @db.Date
+  state     InventoryState @default(OPEN)
+  bookingId String?
+  booking   Booking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  note      String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@unique([roomId, date])
+  @@index([date])
+  @@map("room_inventory")
+}
+
+/// Pricing strategy for a RoomType (e.g. "Flexible", "Non-refundable",
+/// "Early bird"). Kept separate from RoomType so multiple rate plans can
+/// price the same physical room differently.
+model RatePlan {
+  id             String   @id @default(cuid())
+  propertyId     String
+  property       Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  roomTypeId     String
+  roomType       RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  name           String
+  refundable     Boolean  @default(true)
+  priceCents     Int
+  minStayNights  Int      @default(1)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  bookings       Booking[]
+
+  @@map("rate_plans")
+}
+
+model Amenity {
+  id         String   @id @default(cuid())
+  propertyId String
+  property   Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  name       String
+  icon       String?
+  category   String?
+
+  roomTypes  RoomTypeAmenity[]
+
+  @@map("amenities")
+}
+
+model RoomTypeAmenity {
+  roomTypeId String
+  roomType   RoomType @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  amenityId  String
+  amenity    Amenity  @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@id([roomTypeId, amenityId])
+  @@map("room_type_amenities")
+}
+
+// ---------------------------------------------------------------------------
+// Guests / bookings
+// ---------------------------------------------------------------------------
+
+model Guest {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  firstName String
+  lastName  String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bookings  Booking[]
+
+  @@map("guests")
+}
+
+/// Blocking rule (see docs/availability-engine.md):
+///   blocks inventory : PENDING, CONFIRMED, CHECKED_IN, CHECKED_OUT
+///   releases inventory: CANCELLED, NO_SHOW
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  CHECKED_IN
+  CHECKED_OUT
+  NO_SHOW
+}
+
+/// A reservation for a date range against a RoomType (physical Room is
+/// allocated via RoomInventory rows, and may change before check-in).
+/// Status transitions are the trigger points for the automation events
+/// defined in `src/lib/events`.
+model Booking {
+  id           String        @id @default(cuid())
+  propertyId   String
+  property     Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  roomTypeId   String
+  roomType     RoomType      @relation(fields: [roomTypeId], references: [id])
+  ratePlanId   String
+  ratePlan     RatePlan      @relation(fields: [ratePlanId], references: [id])
+  guestId      String
+  guest        Guest         @relation(fields: [guestId], references: [id])
+  status       BookingStatus @default(PENDING)
+  checkInDate  DateTime      @db.Date
+  checkOutDate DateTime      @db.Date
+  adults       Int           @default(1)
+  children     Int           @default(0)
+  totalCents   Int
+  currency     String        @default("USD")
+  promotionId  String?
+  promotion    Promotion?    @relation(fields: [promotionId], references: [id])
+  notes        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  bookingGuests BookingGuest[]
+  bookingRooms  BookingRoom[]
+  payments      Payment[]
+  invoices      Invoice[]
+  inventoryHolds RoomInventory[]
+  notifications Notification[]
+
+  @@index([propertyId, status, checkInDate, checkOutDate])
+  @@map("bookings")
+}
+
+/// Join between a Booking and the physical Room(s)/occupant(s) actually
+/// assigned to it — supports multi-room and multi-guest bookings.
+model BookingGuest {
+  id          String   @id @default(cuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  roomId      String?
+  room        Room?    @relation(fields: [roomId], references: [id])
+  fullName    String
+  isPrimary   Boolean  @default(false)
+
+  @@map("booking_guests")
+}
+
+/// Physical room(s) allocated to a booking. A booking may hold several
+/// rooms (multi-room stays). Stay dates live on Booking, so the occupied
+/// interval for each row is [booking.checkInDate, booking.checkOutDate).
+model BookingRoom {
+  id        String   @id @default(cuid())
+  bookingId String
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  roomId    String
+  room      Room     @relation(fields: [roomId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([bookingId, roomId])
+  @@index([roomId])
+  @@map("booking_rooms")
+}
+
+enum RoomBlockStatus {
+  ACTIVE
+  CANCELLED
+}
+
+/// Hotel-created, date-bounded removal of one physical room from sale
+/// (maintenance, owner hold, deep clean...). Occupies [startDate, endDate)
+/// with the same half-open semantics as a stay. CANCELLED blocks (the
+/// "unblock" action) never affect availability but stay for audit.
+model RoomBlock {
+  id               String          @id @default(cuid())
+  roomId           String
+  room             Room            @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  startDate        DateTime        @db.Date
+  endDate          DateTime        @db.Date
+  reason           String
+  notes            String?
+  status           RoomBlockStatus @default(ACTIVE)
+  createdByStaffId String?
+  createdByStaff   StaffUser?      @relation(fields: [createdByStaffId], references: [id])
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@index([roomId, status, startDate, endDate])
+  @@map("room_blocks")
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  bookingId     String
+  booking       Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  amountCents   Int
+  currency      String        @default("USD")
+  status        PaymentStatus @default(PENDING)
+  provider      String?
+  providerRef   String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  invoice       Invoice?
+
+  @@map("payments")
+}
+
+model Invoice {
+  id          String   @id @default(cuid())
+  bookingId   String
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  paymentId   String?  @unique
+  payment     Payment? @relation(fields: [paymentId], references: [id])
+  number      String   @unique
+  totalCents  Int
+  issuedAt    DateTime @default(now())
+
+  @@map("invoices")
+}
+
+enum PromotionType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+model Promotion {
+  id          String        @id @default(cuid())
+  propertyId  String
+  property    Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  code        String
+  type        PromotionType
+  value       Int
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean       @default(true)
+
+  bookings    Booking[]
+
+  @@unique([propertyId, code])
+  @@map("promotions")
+}
+
+// ---------------------------------------------------------------------------
+// Staff / access
+// ---------------------------------------------------------------------------
+
+enum RoleName {
+  OWNER
+  MANAGER
+  FRONT_DESK
+  HOUSEKEEPING
+  STAFF
+}
+
+model Role {
+  id        String     @id @default(cuid())
+  name      RoleName   @unique
+  staff     StaffUser[]
+
+  @@map("roles")
+}
+
+model StaffUser {
+  id         String   @id @default(cuid())
+  hotelId    String
+  hotel      Hotel    @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  propertyId String?
+  property   Property? @relation(fields: [propertyId], references: [id])
+  roleId     String
+  role       Role     @relation(fields: [roleId], references: [id])
+  email      String   @unique
+  firstName  String
+  lastName   String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  auditLogs  AuditLog[]
+  roomBlocks RoomBlock[]
+
+  @@map("staff_users")
+}
+
+// ---------------------------------------------------------------------------
+// Notifications / audit
+// ---------------------------------------------------------------------------
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  IN_APP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+/// Outbox for the automation layer (see src/lib/events). Event handlers
+/// write rows here rather than sending messages inline, so delivery has a
+/// durable record, retry state, and an audit trail.
+model Notification {
+  id         String              @id @default(cuid())
+  propertyId String
+  property   Property            @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  bookingId  String?
+  booking    Booking?            @relation(fields: [bookingId], references: [id])
+  channel    NotificationChannel
+  status     NotificationStatus  @default(QUEUED)
+  event      String
+  payload    Json
+  attempts   Int                 @default(0)
+  lastError  String?
+  createdAt  DateTime            @default(now())
+  sentAt     DateTime?
+
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String     @id @default(cuid())
+  propertyId String?
+  property   Property?  @relation(fields: [propertyId], references: [id])
+  staffId    String?
+  staff      StaffUser? @relation(fields: [staffId], references: [id])
+  action     String
+  entity     String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime   @default(now())
+
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
